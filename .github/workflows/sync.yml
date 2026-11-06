@@ -1,0 +1,116 @@
+# 每日把 hagezi Pro 的两个规则文件同步到 Gitee。
+# 仓库 https://github.com/GPX-NSlog/adguard-rules-sync（public）
+# 需要的仓库 Secrets：GITEE_USER、GITEE_TOKEN（Gitee 私人令牌，权限只勾 projects）
+# public 仓库连续 60 天无提交活动会被 GitHub 禁用 schedule，所以本 workflow 顺带提交 sync-state.json 作为心跳。
+
+name: sync-hagezi-pro-to-gitee
+
+on:
+  schedule:
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-hagezi-pro
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  GITEE_OWNER: NSLogyxx
+  GITEE_REPO: adguard-rules-mirror
+  GITEE_BRANCH: master
+  UPSTREAM: https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout sync repository
+        uses: actions/checkout@v4
+
+      - name: 下载上游规则文件
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for f in pro.txt pro-onlydomains.txt; do
+            curl -fsSL --retry 3 --retry-delay 10 --max-time 180 -H "User-Agent: adguard-rules-mirror/1.0" "$UPSTREAM/$f" -o "out/$f" || curl -fsSL --retry 3 --retry-delay 10 --max-time 180 -H "User-Agent: adguard-rules-mirror/1.0" "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@main/wildcard/$f" -o "out/$f"
+            test -s "out/$f"
+            if head -c 64 "out/$f" | grep -qi '<html'; then
+              echo "::error::$f is not a rule file"; exit 1
+            fi
+            lines=$(wc -l < "out/$f")
+            if [ "$lines" -lt 50000 ]; then
+              echo "::error::$f truncated: $lines lines"; exit 1
+            fi
+            echo "$f -> $(stat -c%s "out/$f") bytes / $lines lines / sha256 $(sha256sum "out/$f" | cut -d' ' -f1)"
+          done
+
+      - name: 克隆 Gitee 镜像仓库
+        env:
+          GITEE_USER: ${{ secrets.GITEE_USER }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${GITEE_USER:?missing GITEE_USER}"
+          : "${GITEE_TOKEN:?missing GITEE_TOKEN}"
+          AUTH=$(printf '%s' "$GITEE_USER:$GITEE_TOKEN" | base64 -w0)
+          git -c http.extraheader="Authorization: Basic $AUTH" clone --depth 1 --branch "$GITEE_BRANCH" "https://gitee.com/$GITEE_OWNER/$GITEE_REPO.git" mirror
+
+      - name: 写入并提交
+        id: update
+        run: |
+          set -euo pipefail
+          cp out/pro.txt out/pro-onlydomains.txt mirror/
+          cd mirror
+          git config core.autocrlf false
+          git config user.name "adguard-rules-bot"
+          git config user.email "adguard-rules-bot@users.noreply.github.com"
+          git add pro.txt pro-onlydomains.txt
+          if git diff --cached --quiet; then
+            echo "unchanged, skip push"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "chore: sync hagezi Pro lists ($(date -u +%F))"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 推送到 Gitee
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GITEE_USER: ${{ secrets.GITEE_USER }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+          AUTH=$(printf '%s' "$GITEE_USER:$GITEE_TOKEN" | base64 -w0)
+          git -C mirror -c http.extraheader="Authorization: Basic $AUTH" push origin HEAD:"$GITEE_BRANCH"
+
+      - name: 记录同步状态
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f out/pro.txt ]; then
+            pro=$(sha256sum out/pro.txt | cut -d' ' -f1)
+            only=$(sha256sum out/pro-onlydomains.txt | cut -d' ' -f1)
+          else
+            pro="unavailable"; only="unavailable"
+          fi
+          cat > sync-state.json <<EOF
+          {
+            "lastRunUtc": "$(date -u +%FT%TZ)",
+            "runId": "${{ github.run_id }}",
+            "result": "${{ job.status }}",
+            "giteePushed": "${{ steps.update.outputs.changed }}",
+            "sha256": { "pro.txt": "${pro}", "pro-onlydomains.txt": "${only}" }
+          }
+          EOF
+          git config user.name "adguard-rules-bot"
+          git config user.email "adguard-rules-bot@users.noreply.github.com"
+          git add sync-state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: sync state $(date -u +%F)"
+            git push
+          fi
