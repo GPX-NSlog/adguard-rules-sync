@@ -1,7 +1,7 @@
 {
-  "lastRunUtc": "2026-11-12T23:42:51Z",
-  "runId": "43330961292",
-  "result": "failure",
+  "lastRunUtc": "2026-11-13T23:38:46Z",
+  "runId": "43528597112",
+  "result": "success",
   "giteePushed": "true",
-  "sha256": { "pro.txt": "2689697a05a51e28794c546eba130f12a546950b925d93b43c7b7aa869815428", "pro-onlydomains.txt": "091d4f02dd5f779541eb2f0207cffdb2f84f8428f385d7fc91fe7fd48997e0ba" }
+  "sha256": { "pro.txt": "6cf08c260999b950c54b56b87971af8a135d8818beb19be6212214a73e128b65", "pro-onlydomains.txt": "1742b51fb86a2829c3592ff4d294adde2471667d68f7d8a5ecb2dec18a31cd96" }
 }
